@@ -17,54 +17,60 @@
         </p>
       </header>
 
-      <section class="panel controls-panel">
-        <div class="panel-head">
-          <h2>ETF 비중 컨트롤러</h2>
-          <p>5개 ETF 비율을 조절하면 과거 누적 수익률이 즉시 다시 계산됩니다.</p>
-        </div>
-        <div class="controls-grid">
-          <label class="control"><span>SPY 비중</span><input id="wSPY" type="range" min="0" max="100" step="1" value="40" /><strong id="wSPYValue">40%</strong></label>
-          <label class="control"><span>QQQ 비중</span><input id="wQQQ" type="range" min="0" max="100" step="1" value="25" /><strong id="wQQQValue">25%</strong></label>
-          <label class="control"><span>GLD 비중</span><input id="wGLD" type="range" min="0" max="100" step="1" value="20" /><strong id="wGLDValue">20%</strong></label>
-          <label class="control"><span>USO 비중</span><input id="wUSO" type="range" min="0" max="100" step="1" value="0" /><strong id="wUSOValue">0%</strong></label>
-          <label class="control"><span>EWJ 비중</span><input id="wEWJ" type="range" min="0" max="100" step="1" value="15" /><strong id="wEWJValue">15%</strong></label>
-        </div>
-        <p id="weightTotalText" class="result-mode"></p>
-      </section>
+      <div class="dashboard-layout">
+        <aside class="left-column">
+          <section class="panel controls-panel">
+            <div class="panel-head">
+              <h2>ETF 비중 컨트롤러</h2>
+              <p>5개 ETF 비율을 조절하면 과거 누적 수익률이 즉시 다시 계산됩니다.</p>
+            </div>
+            <div class="controls-grid">
+              <label class="control"><span>SPY 비중</span><input id="wSPY" type="range" min="0" max="100" step="1" value="40" /><strong id="wSPYValue">40%</strong></label>
+              <label class="control"><span>QQQ 비중</span><input id="wQQQ" type="range" min="0" max="100" step="1" value="25" /><strong id="wQQQValue">25%</strong></label>
+              <label class="control"><span>GLD 비중</span><input id="wGLD" type="range" min="0" max="100" step="1" value="20" /><strong id="wGLDValue">20%</strong></label>
+              <label class="control"><span>USO 비중</span><input id="wUSO" type="range" min="0" max="100" step="1" value="0" /><strong id="wUSOValue">0%</strong></label>
+              <label class="control"><span>EWJ 비중</span><input id="wEWJ" type="range" min="0" max="100" step="1" value="15" /><strong id="wEWJValue">15%</strong></label>
+            </div>
+            <p id="weightTotalText" class="result-mode"></p>
+          </section>
 
-      <section class="cards" id="summary-cards"></section>
+          <section class="cards" id="summary-cards"></section>
 
-      <section class="panel">
-        <div class="panel-head">
-          <h2>누적 수익률 지수 (기준값=100)</h2>
-          <p>전략 vs SPY</p>
-        </div>
-        <canvas id="strategyChart"></canvas>
-      </section>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>현재 입력 비중</h2>
+              <p>합계 100%로 자동 정규화된 실제 계산 비중</p>
+            </div>
+            <canvas id="allocationChart"></canvas>
+          </section>
+        </aside>
 
-      <section class="panel">
-        <div class="panel-head">
-          <h2>ETF 가격지수 비교 (기준값=100)</h2>
-          <p>SPY, QQQ, GLD, USO, EWJ</p>
-        </div>
-        <canvas id="etfChart"></canvas>
-      </section>
+        <section class="right-column">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>누적 수익률 지수 (기준값=100)</h2>
+              <p>전략 vs SPY</p>
+            </div>
+            <canvas id="strategyChart"></canvas>
+          </section>
 
-      <section class="panel">
-        <div class="panel-head">
-          <h2>현재 입력 비중</h2>
-          <p>합계 100%로 자동 정규화된 실제 계산 비중</p>
-        </div>
-        <canvas id="allocationChart"></canvas>
-      </section>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>ETF 가격지수 비교 (기준값=100)</h2>
+              <p>SPY, QQQ, GLD, USO, EWJ</p>
+            </div>
+            <canvas id="etfChart"></canvas>
+          </section>
 
-      <section class="panel">
-        <div class="panel-head">
-          <h2>ETF별 누적 기여도</h2>
-          <p>전략 수익률에 각 ETF가 얼마나 기여했는지</p>
-        </div>
-        <canvas id="contributionChart"></canvas>
-      </section>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>ETF별 누적 기여도</h2>
+              <p>전략 수익률에 각 ETF가 얼마나 기여했는지</p>
+            </div>
+            <canvas id="contributionChart"></canvas>
+          </section>
+        </section>
+      </div>
 
     </main>
 
