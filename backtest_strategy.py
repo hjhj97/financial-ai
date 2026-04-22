@@ -9,9 +9,11 @@ import pandas as pd
 
 
 UNIVERSE = ["SPY", "QQQ", "GLD", "USO", "EWJ"]
-ACTIVE_UNIVERSE = ["SPY", "QQQ", "GLD", "EWJ"]
+ACTIVE_UNIVERSE = ["SPY", "QQQ", "GLD", "USO", "EWJ"]
 INITIAL_CAPITAL = 10_000.0
 LOOKBACK_BY_PERIOD = {"1mo": "6mo", "1y": "2y"}
+MAX_SINGLE_WEIGHT = 0.55
+MAX_EQUITY_PAIR = 0.90
 
 
 @dataclass
@@ -83,11 +85,11 @@ def classify_regime(features: pd.DataFrame) -> str:
 def apply_regime_tilt(weights: pd.Series, regime: str) -> pd.Series:
     tilted = weights.copy()
     if regime == "risk_on":
-        multipliers = {"SPY": 1.10, "QQQ": 1.05, "GLD": 0.90, "EWJ": 1.00}
+        multipliers = {"SPY": 1.20, "QQQ": 1.25, "GLD": 0.70, "USO": 1.15, "EWJ": 1.05}
     elif regime == "defensive":
-        multipliers = {"SPY": 0.85, "QQQ": 0.75, "GLD": 1.35, "EWJ": 0.90}
+        multipliers = {"SPY": 0.95, "QQQ": 0.80, "GLD": 1.10, "USO": 0.70, "EWJ": 0.90}
     else:
-        multipliers = {"SPY": 1.00, "QQQ": 0.90, "GLD": 1.20, "EWJ": 1.00}
+        multipliers = {"SPY": 1.05, "QQQ": 1.00, "GLD": 0.95, "USO": 1.00, "EWJ": 1.00}
 
     for ticker, multiplier in multipliers.items():
         if ticker in tilted.index:
@@ -99,7 +101,7 @@ def redistribute_capacity(weights: pd.Series, residual: float, priorities: list[
     for ticker in priorities:
         if residual <= 1e-12:
             break
-        room = max(0.0, 0.40 - weights.get(ticker, 0.0))
+        room = max(0.0, MAX_SINGLE_WEIGHT - weights.get(ticker, 0.0))
         if room <= 0:
             continue
         add = min(room, residual)
@@ -110,40 +112,27 @@ def redistribute_capacity(weights: pd.Series, residual: float, priorities: list[
 
 def apply_constraints(weights: pd.Series) -> pd.Series:
     constrained = weights.copy().reindex(UNIVERSE, fill_value=0.0)
-    constrained.loc["USO"] = 0.0
 
     if constrained.sum() <= 0:
-        constrained.loc["SPY"] = 0.40
-        constrained.loc["GLD"] = 0.40
-        constrained.loc["EWJ"] = 0.20
-
-    if len(constrained[constrained > 0]) > 4:
-        for ticker in constrained.sort_values().index:
-            if ticker == "USO":
-                continue
-            if len(constrained[constrained > 0]) <= 4:
-                break
-            constrained.loc[ticker] = 0.0
+        constrained.loc["SPY"] = 0.60
+        constrained.loc["QQQ"] = 0.30
+        constrained.loc["GLD"] = 0.10
 
     total = constrained.sum()
     if total > 0:
         constrained = constrained / total
 
-    for ticker in ACTIVE_UNIVERSE:
-        constrained.loc[ticker] = min(constrained.loc[ticker], 0.40)
+    for ticker in UNIVERSE:
+        constrained.loc[ticker] = min(constrained.loc[ticker], MAX_SINGLE_WEIGHT)
 
     equity_sum = constrained.loc["SPY"] + constrained.loc["QQQ"]
-    if equity_sum > 0.55:
-        scale = 0.55 / equity_sum
+    if equity_sum > MAX_EQUITY_PAIR:
+        scale = MAX_EQUITY_PAIR / equity_sum
         constrained.loc["SPY"] *= scale
         constrained.loc["QQQ"] *= scale
 
-    if len(constrained[constrained > 0]) < 2:
-        constrained.loc["SPY"] = max(constrained.loc["SPY"], 0.35)
-        constrained.loc["GLD"] = max(constrained.loc["GLD"], 0.20)
-
     residual = max(0.0, 1.0 - constrained.sum())
-    constrained, residual = redistribute_capacity(constrained, residual, ["GLD", "EWJ", "SPY", "QQQ"])
+    constrained, residual = redistribute_capacity(constrained, residual, ["QQQ", "SPY", "EWJ", "USO", "GLD"])
 
     total_after = constrained.sum()
     if total_after > 1.0:
@@ -169,19 +158,19 @@ def compute_target_weights(prices: pd.DataFrame, as_of: pd.Timestamp) -> tuple[p
         corr_20[ticker] = returns[ticker].iloc[-20:].corr(spy_returns.iloc[-20:])
     features["corr_spy_20"] = pd.Series(corr_20)
 
-    trend = 0.6 * zscore(features["mom_5"]) + 0.4 * zscore(features["mom_20"])
+    trend = 0.75 * zscore(features["mom_5"]) + 0.25 * zscore(features["mom_20"])
     drawdown_penalty = zscore(features["drawdown_20"].abs())
-    risk_penalty = 0.6 * zscore(features["vol_20"]) + 0.4 * drawdown_penalty
-    total_score = trend - risk_penalty
+    risk_penalty = 0.5 * zscore(features["vol_20"]) + 0.2 * drawdown_penalty
+    total_score = trend - 0.65 * risk_penalty
     features["total_score"] = total_score
 
     selected = features[features["total_score"] > 0].index.tolist()
-    if len(selected) < 2:
-        selected = features.sort_values("total_score", ascending=False).index[:2].tolist()
+    if len(selected) < 1:
+        selected = [features["total_score"].idxmax()]
 
-    inverse_vol = 1.0 / features.loc[selected, "vol_20"].replace(0, np.nan)
-    inverse_vol = inverse_vol.fillna(0.0)
-    weights = inverse_vol / inverse_vol.sum()
+    selected_scores = features.loc[selected, "total_score"]
+    shifted = selected_scores - selected_scores.min() + 1e-6
+    weights = shifted / shifted.sum()
 
     full_weights = pd.Series(0.0, index=UNIVERSE)
     for ticker in selected:

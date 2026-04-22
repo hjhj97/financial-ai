@@ -11,30 +11,26 @@ const COLORS = {
 };
 
 const controls = {
-  momShortWeight: document.getElementById("momShortWeight"),
-  riskPenaltyStrength: document.getElementById("riskPenaltyStrength"),
-  gldTilt: document.getElementById("gldTilt"),
-  equityTilt: document.getElementById("equityTilt"),
-  maxSingle: document.getElementById("maxSingle"),
-  maxEquityPair: document.getElementById("maxEquityPair"),
-  rebalanceDays: document.getElementById("rebalanceDays"),
-  allowUSO: document.getElementById("allowUSO"),
+  SPY: document.getElementById("wSPY"),
+  QQQ: document.getElementById("wQQQ"),
+  GLD: document.getElementById("wGLD"),
+  USO: document.getElementById("wUSO"),
+  EWJ: document.getElementById("wEWJ"),
 };
 
 const controlValues = {
-  momShortWeight: document.getElementById("momShortWeightValue"),
-  riskPenaltyStrength: document.getElementById("riskPenaltyStrengthValue"),
-  gldTilt: document.getElementById("gldTiltValue"),
-  equityTilt: document.getElementById("equityTiltValue"),
-  maxSingle: document.getElementById("maxSingleValue"),
-  maxEquityPair: document.getElementById("maxEquityPairValue"),
-  rebalanceDays: document.getElementById("rebalanceDaysValue"),
+  SPY: document.getElementById("wSPYValue"),
+  QQQ: document.getElementById("wQQQValue"),
+  GLD: document.getElementById("wGLDValue"),
+  USO: document.getElementById("wUSOValue"),
+  EWJ: document.getElementById("wEWJValue"),
 };
 
-let charts = {
+const charts = {
   strategy: null,
   etf: null,
-  weight: null,
+  allocation: null,
+  contribution: null,
 };
 
 const appState = {
@@ -43,14 +39,6 @@ const appState = {
 
 function pct(v) {
   return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
-}
-
-function zscore(values) {
-  const mean = values.reduce((a, b) => a + b, 0) / values.length;
-  const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length;
-  const sigma = Math.sqrt(variance);
-  if (!sigma) return values.map(() => 0);
-  return values.map((v) => (v - mean) / sigma);
 }
 
 function std(values) {
@@ -80,155 +68,55 @@ function maxDrawdown(curve) {
   return mdd;
 }
 
-function getParams() {
-  return {
-    momShortWeight: Number(controls.momShortWeight.value),
-    riskPenaltyStrength: Number(controls.riskPenaltyStrength.value),
-    gldTilt: Number(controls.gldTilt.value),
-    equityTilt: Number(controls.equityTilt.value),
-    maxSingle: Number(controls.maxSingle.value),
-    maxEquityPair: Number(controls.maxEquityPair.value),
-    rebalanceDays: Number(controls.rebalanceDays.value),
-    allowUSO: controls.allowUSO.checked,
-  };
+function getRawWeightsFromControls() {
+  return Object.fromEntries(UNIVERSE.map((t) => [t, Number(controls[t].value)]));
 }
 
-function updateControlValueLabels(params) {
-  controlValues.momShortWeight.textContent = params.momShortWeight.toFixed(2);
-  controlValues.riskPenaltyStrength.textContent = params.riskPenaltyStrength.toFixed(2);
-  controlValues.gldTilt.textContent = params.gldTilt.toFixed(2);
-  controlValues.equityTilt.textContent = params.equityTilt.toFixed(2);
-  controlValues.maxSingle.textContent = `${Math.round(params.maxSingle * 100)}%`;
-  controlValues.maxEquityPair.textContent = `${Math.round(params.maxEquityPair * 100)}%`;
-  controlValues.rebalanceDays.textContent = String(params.rebalanceDays);
+function normalizeWeights(rawWeights) {
+  const total = UNIVERSE.reduce((acc, t) => acc + (rawWeights[t] || 0), 0);
+  if (total <= 0) {
+    const equal = 1 / UNIVERSE.length;
+    return Object.fromEntries(UNIVERSE.map((t) => [t, equal]));
+  }
+  return Object.fromEntries(UNIVERSE.map((t) => [t, (rawWeights[t] || 0) / total]));
 }
 
-function classifyRegime(featureMap) {
-  const spyMom = featureMap.SPY.momLong;
-  const qqqMom = featureMap.QQQ.momLong;
-  const spyVol = featureMap.SPY.vol;
-  const vols = Object.values(featureMap).map((v) => v.vol).sort((a, b) => a - b);
-  const medianVol = vols[Math.floor(vols.length / 2)];
-  const gldMom = featureMap.GLD.momLong;
-  if (spyMom > 0 && qqqMom > 0 && spyVol <= medianVol * 1.2) return "risk_on";
-  if (spyMom < 0 && qqqMom < 0 && gldMom > 0) return "defensive";
-  return "mixed";
+function updateControlLabels(rawWeights) {
+  for (const t of UNIVERSE) {
+    controlValues[t].textContent = `${rawWeights[t]}%`;
+  }
+  const total = UNIVERSE.reduce((acc, t) => acc + rawWeights[t], 0);
+  const totalEl = document.getElementById("weightTotalText");
+  totalEl.textContent = `입력 비중 합계: ${total}% (차트 계산 시 자동으로 100% 정규화)`;
 }
 
-function applyConstraints(weights, params) {
-  const adjusted = { ...weights };
-  if (!params.allowUSO) adjusted.USO = 0;
-  for (const ticker of UNIVERSE) {
-    adjusted[ticker] = Math.min(Math.max(adjusted[ticker] || 0, 0), params.maxSingle);
-  }
-
-  const eqSum = (adjusted.SPY || 0) + (adjusted.QQQ || 0);
-  if (eqSum > params.maxEquityPair) {
-    const scale = params.maxEquityPair / eqSum;
-    adjusted.SPY *= scale;
-    adjusted.QQQ *= scale;
-  }
-
-  if (Object.values(adjusted).filter((v) => v > 0).length < 2) {
-    adjusted.SPY = Math.max(adjusted.SPY || 0, 0.35);
-    adjusted.GLD = Math.max(adjusted.GLD || 0, 0.20);
-  }
-
-  let sum = Object.values(adjusted).reduce((a, b) => a + b, 0);
-  if (!sum) {
-    adjusted.SPY = 0.6;
-    adjusted.GLD = 0.4;
-    sum = 1;
-  }
-  for (const ticker of UNIVERSE) adjusted[ticker] /= sum;
-  return adjusted;
-}
-
-function simulateStrategy(data, params) {
-  const prices = data.etf_index_100;
-  const n = data.dates.length;
-  const lookback = 21;
+function buildDailyReturns(etfIndex100) {
+  const n = etfIndex100.SPY.length;
   const dailyRet = {};
-
   for (const ticker of UNIVERSE) {
     dailyRet[ticker] = [];
     for (let i = 0; i < n; i += 1) {
       if (i === 0) dailyRet[ticker].push(0);
-      else dailyRet[ticker].push(prices[ticker][i] / prices[ticker][i - 1] - 1);
+      else dailyRet[ticker].push(etfIndex100[ticker][i] / etfIndex100[ticker][i - 1] - 1);
     }
   }
+  return dailyRet;
+}
 
-  const strategyRet = Array(n).fill(0);
-  const rebalanceLog = [];
-  let currentW = { SPY: 0.35, QQQ: 0.2, GLD: 0.35, USO: 0, EWJ: 0.1 };
-  let holdUntil = lookback;
+function simulateFixedAllocation(data, weights) {
+  const n = data.dates.length;
+  const dailyRet = buildDailyReturns(data.etf_index_100);
+  const portfolioRet = Array(n).fill(0);
+  const contributionCurves = Object.fromEntries(UNIVERSE.map((t) => [t, Array(n).fill(0)]));
 
   for (let i = 1; i < n; i += 1) {
-    if (i >= lookback && i >= holdUntil) {
-      const active = params.allowUSO ? UNIVERSE : UNIVERSE.filter((t) => t !== "USO");
-      const featureMap = {};
-      for (const ticker of active) {
-        const p = prices[ticker];
-        const r = dailyRet[ticker];
-        featureMap[ticker] = {
-          momShort: p[i] / p[i - 5] - 1,
-          momLong: p[i] / p[i - 20] - 1,
-          vol: std(r.slice(i - 19, i + 1)) * Math.sqrt(252),
-          drawdown: p[i] / Math.max(...p.slice(i - 19, i + 1)) - 1,
-        };
-      }
-
-      const tickers = Object.keys(featureMap);
-      const momShortZ = zscore(tickers.map((t) => featureMap[t].momShort));
-      const momLongZ = zscore(tickers.map((t) => featureMap[t].momLong));
-      const volZ = zscore(tickers.map((t) => featureMap[t].vol));
-      const ddZ = zscore(tickers.map((t) => Math.abs(featureMap[t].drawdown)));
-      const score = {};
-
-      for (let j = 0; j < tickers.length; j += 1) {
-        const trend = params.momShortWeight * momShortZ[j] + (1 - params.momShortWeight) * momLongZ[j];
-        const riskPenalty = params.riskPenaltyStrength * (0.6 * volZ[j] + 0.4 * ddZ[j]);
-        score[tickers[j]] = trend - riskPenalty;
-      }
-
-      let selected = tickers.filter((t) => score[t] > 0);
-      if (selected.length < 2) {
-        selected = [...tickers].sort((a, b) => score[b] - score[a]).slice(0, 2);
-      }
-
-      let invVolSum = 0;
-      const provisional = { SPY: 0, QQQ: 0, GLD: 0, USO: 0, EWJ: 0 };
-      for (const t of selected) invVolSum += 1 / Math.max(featureMap[t].vol, 1e-6);
-      for (const t of selected) provisional[t] = (1 / Math.max(featureMap[t].vol, 1e-6)) / invVolSum;
-
-      const regime = classifyRegime({
-        SPY: featureMap.SPY || { momLong: 0, vol: 0 },
-        QQQ: featureMap.QQQ || { momLong: 0, vol: 0 },
-        GLD: featureMap.GLD || { momLong: 0, vol: 0 },
-      });
-
-      if (regime === "risk_on") {
-        provisional.SPY *= 1 + 0.15 + params.equityTilt;
-        provisional.QQQ *= 1 + 0.1 + params.equityTilt;
-        provisional.GLD *= 1 - 0.1 + params.gldTilt;
-      } else if (regime === "defensive") {
-        provisional.SPY *= 0.85 + params.equityTilt;
-        provisional.QQQ *= 0.75 + params.equityTilt;
-        provisional.GLD *= 1.35 + params.gldTilt;
-      } else {
-        provisional.SPY *= 1 + params.equityTilt;
-        provisional.QQQ *= 0.9 + params.equityTilt;
-        provisional.GLD *= 1.2 + params.gldTilt;
-      }
-
-      currentW = applyConstraints(provisional, params);
-      holdUntil = i + params.rebalanceDays;
-      rebalanceLog.push({ date: data.dates[i], regime, ...currentW });
+    let r = 0;
+    for (const t of UNIVERSE) {
+      const contrib = weights[t] * dailyRet[t][i];
+      contributionCurves[t][i] = contributionCurves[t][i - 1] + contrib * 100;
+      r += contrib;
     }
-
-    let ret = 0;
-    for (const ticker of UNIVERSE) ret += (currentW[ticker] || 0) * dailyRet[ticker][i];
-    strategyRet[i] = ret;
+    portfolioRet[i] = r;
   }
 
   const strategyIndex = [];
@@ -236,7 +124,7 @@ function simulateStrategy(data, params) {
   let s = 100;
   let b = 100;
   for (let i = 0; i < n; i += 1) {
-    s *= 1 + strategyRet[i];
+    s *= 1 + portfolioRet[i];
     b *= 1 + dailyRet.SPY[i];
     strategyIndex.push(s);
     spyIndex.push(b);
@@ -244,15 +132,15 @@ function simulateStrategy(data, params) {
 
   const stratTotal = strategyIndex.at(-1) / strategyIndex[0] - 1;
   const spyTotal = spyIndex.at(-1) / spyIndex[0] - 1;
-  const stratVol = std(strategyRet.slice(1)) * Math.sqrt(252);
+  const stratVol = std(portfolioRet.slice(1)) * Math.sqrt(252);
   const spyVol = std(dailyRet.SPY.slice(1)) * Math.sqrt(252);
   const spyDailyVar = (spyVol / Math.sqrt(252)) ** 2;
-  const betaRaw = spyDailyVar ? covariance(strategyRet.slice(1), dailyRet.SPY.slice(1)) / spyDailyVar : 0;
+  const betaRaw = spyDailyVar ? covariance(portfolioRet.slice(1), dailyRet.SPY.slice(1)) / spyDailyVar : 0;
 
   return {
     strategyIndex,
     spyIndex,
-    rebalanceLog,
+    contributionCurves,
     summary: {
       strategy_total_return_pct: stratTotal * 100,
       spy_total_return_pct: spyTotal * 100,
@@ -274,11 +162,11 @@ function makeCard(label, value) {
 function renderCards(summary) {
   const cards = document.getElementById("summary-cards");
   cards.innerHTML = "";
-  cards.appendChild(makeCard("전략 누적수익률", pct(summary.strategy_total_return_pct)));
+  cards.appendChild(makeCard("포트폴리오 누적수익률", pct(summary.strategy_total_return_pct)));
   cards.appendChild(makeCard("SPY 누적수익률", pct(summary.spy_total_return_pct)));
-  cards.appendChild(makeCard("전략-SPY", pct(summary.alpha_vs_spy_pct)));
-  cards.appendChild(makeCard("전략 MDD", pct(summary.max_drawdown_pct)));
-  cards.appendChild(makeCard("전략 변동성", `${summary.annualized_volatility_pct.toFixed(2)}%`));
+  cards.appendChild(makeCard("포트폴리오-SPY", pct(summary.alpha_vs_spy_pct)));
+  cards.appendChild(makeCard("포트폴리오 MDD", pct(summary.max_drawdown_pct)));
+  cards.appendChild(makeCard("포트폴리오 변동성", `${summary.annualized_volatility_pct.toFixed(2)}%`));
   cards.appendChild(makeCard("Beta (vs SPY)", summary.beta_vs_spy.toFixed(2)));
 }
 
@@ -289,7 +177,7 @@ function renderStrategyChart(labels, strategySeries, spySeries) {
     data: {
       labels,
       datasets: [
-        { label: "Strategy", data: strategySeries, borderColor: COLORS.strategy, borderWidth: 2.3, pointRadius: 0 },
+        { label: "Portfolio", data: strategySeries, borderColor: COLORS.strategy, borderWidth: 2.3, pointRadius: 0 },
         { label: "SPY", data: spySeries, borderColor: COLORS.spy, borderWidth: 1.8, pointRadius: 0 },
       ],
     },
@@ -325,45 +213,62 @@ function renderEtfChart(labels, etfIndex100) {
   });
 }
 
-function renderWeightChart(rebalanceLog) {
-  if (charts.weight) charts.weight.destroy();
-  charts.weight = new Chart(document.getElementById("weightChart"), {
-    type: "bar",
+function renderAllocationChart(weights) {
+  if (charts.allocation) charts.allocation.destroy();
+  charts.allocation = new Chart(document.getElementById("allocationChart"), {
+    type: "doughnut",
     data: {
-      labels: rebalanceLog.map((d) => d.date),
+      labels: UNIVERSE,
+      datasets: [
+        {
+          data: UNIVERSE.map((t) => weights[t] * 100),
+          backgroundColor: UNIVERSE.map((t) => COLORS[t]),
+          borderColor: "#ffffff",
+          borderWidth: 2,
+        },
+      ],
+    },
+    options: { plugins: { legend: { position: "right" } } },
+  });
+}
+
+function renderContributionChart(labels, contributionCurves) {
+  if (charts.contribution) charts.contribution.destroy();
+  charts.contribution = new Chart(document.getElementById("contributionChart"), {
+    type: "line",
+    data: {
+      labels,
       datasets: UNIVERSE.map((ticker) => ({
         label: ticker,
-        data: rebalanceLog.map((d) => (d[ticker] || 0) * 100),
-        backgroundColor: COLORS[ticker],
-        stack: "weights",
+        data: contributionCurves[ticker],
+        borderColor: COLORS[ticker],
+        borderWidth: ticker === "SPY" ? 2.2 : 1.6,
+        pointRadius: 0,
       })),
     },
     options: {
       responsive: true,
+      interaction: { mode: "index", intersect: false },
       plugins: { legend: { position: "top" } },
-      scales: {
-        x: { stacked: true },
-        y: { stacked: true, min: 0, max: 100, title: { display: true, text: "Weight (%)" } },
-      },
+      scales: { y: { title: { display: true, text: "Cumulative Contribution (%p)" } } },
     },
   });
 }
 
 function rerenderAll() {
-  const params = getParams();
-  updateControlValueLabels(params);
-  const result = simulateStrategy(appState.data, params);
+  const rawWeights = getRawWeightsFromControls();
+  updateControlLabels(rawWeights);
+  const effectiveWeights = normalizeWeights(rawWeights);
+  const result = simulateFixedAllocation(appState.data, effectiveWeights);
   renderCards(result.summary);
   renderStrategyChart(appState.data.dates, result.strategyIndex, result.spyIndex);
   renderEtfChart(appState.data.dates, appState.data.etf_index_100);
-  renderWeightChart(result.rebalanceLog);
+  renderAllocationChart(effectiveWeights);
+  renderContributionChart(appState.data.dates, result.contributionCurves);
 }
 
 function attachEvents() {
-  Object.values(controls).forEach((el) => {
-    const ev = el.type === "checkbox" ? "change" : "input";
-    el.addEventListener(ev, rerenderAll);
-  });
+  Object.values(controls).forEach((el) => el.addEventListener("input", rerenderAll));
 }
 
 function cloneData(raw) {

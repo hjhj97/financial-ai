@@ -93,11 +93,29 @@ canvas {
   min-height: 300px;
 }
 
+#allocationChart {
+  min-height: 260px;
+}
+
+#contributionChart {
+  min-height: 320px;
+}
+
 .controls-panel .controls-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
   margin-top: 12px;
+}
+
+.result-mode {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 0.84rem;
 }
 
 .control {
@@ -180,6 +198,51 @@ canvas {
   opacity: 1;
   visibility: visible;
   transform: translateY(0);
+}
+
+.decision-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.decision-chip {
+  border: 1px solid var(--line);
+  background: #f8fafc;
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.decision-chip .k {
+  display: block;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.decision-chip .v {
+  display: block;
+  margin-top: 2px;
+  font-weight: 700;
+}
+
+.decision-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+  font-size: 0.88rem;
+}
+
+.decision-table th,
+.decision-table td {
+  border-top: 1px solid var(--line);
+  padding: 8px 6px;
+  text-align: right;
+}
+
+.decision-table th:first-child,
+.decision-table td:first-child {
+  text-align: left;
 }
 
 @media (max-width: 700px) {
