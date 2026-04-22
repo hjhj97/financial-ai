@@ -25,4 +25,4 @@ The dashboard includes:
 - Strategy vs SPY cumulative performance (index base 100)
 - ETF price index comparison (SPY, QQQ, GLD, USO, EWJ)
 - Weekly rebalancing weights over time
-- Interactive strategy controls (momentum/risk/weight caps/rebalance period/USO toggle) with real-time chart updates
+- Interactive strategy controls (momentum/risk/weight caps/rebalance period/USO toggle)

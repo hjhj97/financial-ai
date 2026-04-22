@@ -37,6 +37,10 @@ let charts = {
   weight: null,
 };
 
+const appState = {
+  data: null,
+};
+
 function pct(v) {
   return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 }
@@ -44,40 +48,36 @@ function pct(v) {
 function zscore(values) {
   const mean = values.reduce((a, b) => a + b, 0) / values.length;
   const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length;
-  const std = Math.sqrt(variance);
-  if (!std) {
-    return values.map(() => 0);
-  }
-  return values.map((v) => (v - mean) / std);
+  const sigma = Math.sqrt(variance);
+  if (!sigma) return values.map(() => 0);
+  return values.map((v) => (v - mean) / sigma);
 }
 
 function std(values) {
-  if (values.length === 0) return 0;
+  if (!values.length) return 0;
   const mean = values.reduce((a, b) => a + b, 0) / values.length;
   const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length;
   return Math.sqrt(variance);
 }
 
-function maxDrawdown(indexCurve) {
-  let peak = indexCurve[0];
+function covariance(a, b) {
+  const n = Math.min(a.length, b.length);
+  if (!n) return 0;
+  const ma = a.slice(0, n).reduce((x, y) => x + y, 0) / n;
+  const mb = b.slice(0, n).reduce((x, y) => x + y, 0) / n;
+  let sum = 0;
+  for (let i = 0; i < n; i += 1) sum += (a[i] - ma) * (b[i] - mb);
+  return sum / n;
+}
+
+function maxDrawdown(curve) {
+  let peak = curve[0];
   let mdd = 0;
-  for (const v of indexCurve) {
+  for (const v of curve) {
     peak = Math.max(peak, v);
     mdd = Math.min(mdd, v / peak - 1);
   }
   return mdd;
-}
-
-function covariance(a, b) {
-  const n = Math.min(a.length, b.length);
-  if (n === 0) return 0;
-  const ma = a.slice(0, n).reduce((x, y) => x + y, 0) / n;
-  const mb = b.slice(0, n).reduce((x, y) => x + y, 0) / n;
-  let sum = 0;
-  for (let i = 0; i < n; i += 1) {
-    sum += (a[i] - ma) * (b[i] - mb);
-  }
-  return sum / n;
 }
 
 function getParams() {
@@ -103,22 +103,13 @@ function updateControlValueLabels(params) {
   controlValues.rebalanceDays.textContent = String(params.rebalanceDays);
 }
 
-function buildPriceMap(data) {
-  const map = {};
-  for (const ticker of UNIVERSE) {
-    map[ticker] = data.etf_index_100[ticker];
-  }
-  return map;
-}
-
 function classifyRegime(featureMap) {
   const spyMom = featureMap.SPY.momLong;
   const qqqMom = featureMap.QQQ.momLong;
   const spyVol = featureMap.SPY.vol;
-  const vols = Object.values(featureMap).map((v) => v.vol);
-  const medianVol = vols.sort((a, b) => a - b)[Math.floor(vols.length / 2)];
+  const vols = Object.values(featureMap).map((v) => v.vol).sort((a, b) => a - b);
+  const medianVol = vols[Math.floor(vols.length / 2)];
   const gldMom = featureMap.GLD.momLong;
-
   if (spyMom > 0 && qqqMom > 0 && spyVol <= medianVol * 1.2) return "risk_on";
   if (spyMom < 0 && qqqMom < 0 && gldMom > 0) return "defensive";
   return "mixed";
@@ -126,78 +117,65 @@ function classifyRegime(featureMap) {
 
 function applyConstraints(weights, params) {
   const adjusted = { ...weights };
-
-  if (!params.allowUSO) {
-    adjusted.USO = 0;
-  }
-
+  if (!params.allowUSO) adjusted.USO = 0;
   for (const ticker of UNIVERSE) {
     adjusted[ticker] = Math.min(Math.max(adjusted[ticker] || 0, 0), params.maxSingle);
   }
 
-  const equity = (adjusted.SPY || 0) + (adjusted.QQQ || 0);
-  if (equity > params.maxEquityPair) {
-    const scale = params.maxEquityPair / equity;
+  const eqSum = (adjusted.SPY || 0) + (adjusted.QQQ || 0);
+  if (eqSum > params.maxEquityPair) {
+    const scale = params.maxEquityPair / eqSum;
     adjusted.SPY *= scale;
     adjusted.QQQ *= scale;
   }
 
-  const positive = Object.values(adjusted).filter((v) => v > 0).length;
-  if (positive < 2) {
+  if (Object.values(adjusted).filter((v) => v > 0).length < 2) {
     adjusted.SPY = Math.max(adjusted.SPY || 0, 0.35);
-    adjusted.GLD = Math.max(adjusted.GLD || 0, 0.2);
+    adjusted.GLD = Math.max(adjusted.GLD || 0, 0.20);
   }
 
   let sum = Object.values(adjusted).reduce((a, b) => a + b, 0);
-  if (sum <= 0) {
+  if (!sum) {
     adjusted.SPY = 0.6;
     adjusted.GLD = 0.4;
-    sum = 1.0;
+    sum = 1;
   }
-
-  for (const ticker of UNIVERSE) {
-    adjusted[ticker] /= sum;
-  }
-
+  for (const ticker of UNIVERSE) adjusted[ticker] /= sum;
   return adjusted;
 }
 
 function simulateStrategy(data, params) {
-  const prices = buildPriceMap(data);
+  const prices = data.etf_index_100;
   const n = data.dates.length;
   const lookback = 21;
+  const dailyRet = {};
 
-  const dailyEtfReturns = {};
   for (const ticker of UNIVERSE) {
-    dailyEtfReturns[ticker] = [];
+    dailyRet[ticker] = [];
     for (let i = 0; i < n; i += 1) {
-      if (i === 0) dailyEtfReturns[ticker].push(0);
-      else dailyEtfReturns[ticker].push(prices[ticker][i] / prices[ticker][i - 1] - 1);
+      if (i === 0) dailyRet[ticker].push(0);
+      else dailyRet[ticker].push(prices[ticker][i] / prices[ticker][i - 1] - 1);
     }
   }
 
-  const dailyStrategyReturns = Array(n).fill(0);
+  const strategyRet = Array(n).fill(0);
   const rebalanceLog = [];
-
-  let currentWeights = { SPY: 0.35, QQQ: 0.2, GLD: 0.35, USO: 0, EWJ: 0.1 };
+  let currentW = { SPY: 0.35, QQQ: 0.2, GLD: 0.35, USO: 0, EWJ: 0.1 };
   let holdUntil = lookback;
 
   for (let i = 1; i < n; i += 1) {
     if (i >= lookback && i >= holdUntil) {
-      const activeUniverse = params.allowUSO ? UNIVERSE : UNIVERSE.filter((t) => t !== "USO");
+      const active = params.allowUSO ? UNIVERSE : UNIVERSE.filter((t) => t !== "USO");
       const featureMap = {};
-
-      for (const ticker of activeUniverse) {
+      for (const ticker of active) {
         const p = prices[ticker];
-        const r = dailyEtfReturns[ticker];
-        const momShort = p[i] / p[i - 5] - 1;
-        const momLong = p[i] / p[i - 20] - 1;
-        const windowReturns = r.slice(i - 19, i + 1);
-        const vol = std(windowReturns) * Math.sqrt(252);
-        const rollingMax = Math.max(...p.slice(i - 19, i + 1));
-        const drawdown = p[i] / rollingMax - 1;
-
-        featureMap[ticker] = { momShort, momLong, vol, drawdown };
+        const r = dailyRet[ticker];
+        featureMap[ticker] = {
+          momShort: p[i] / p[i - 5] - 1,
+          momLong: p[i] / p[i - 20] - 1,
+          vol: std(r.slice(i - 19, i + 1)) * Math.sqrt(252),
+          drawdown: p[i] / Math.max(...p.slice(i - 19, i + 1)) - 1,
+        };
       }
 
       const tickers = Object.keys(featureMap);
@@ -205,28 +183,23 @@ function simulateStrategy(data, params) {
       const momLongZ = zscore(tickers.map((t) => featureMap[t].momLong));
       const volZ = zscore(tickers.map((t) => featureMap[t].vol));
       const ddZ = zscore(tickers.map((t) => Math.abs(featureMap[t].drawdown)));
+      const score = {};
 
-      const scoreMap = {};
-      for (let idx = 0; idx < tickers.length; idx += 1) {
-        const t = tickers[idx];
-        const trend = params.momShortWeight * momShortZ[idx] + (1 - params.momShortWeight) * momLongZ[idx];
-        const riskPenalty = params.riskPenaltyStrength * (0.6 * volZ[idx] + 0.4 * ddZ[idx]);
-        scoreMap[t] = trend - riskPenalty;
+      for (let j = 0; j < tickers.length; j += 1) {
+        const trend = params.momShortWeight * momShortZ[j] + (1 - params.momShortWeight) * momLongZ[j];
+        const riskPenalty = params.riskPenaltyStrength * (0.6 * volZ[j] + 0.4 * ddZ[j]);
+        score[tickers[j]] = trend - riskPenalty;
       }
 
-      let selected = tickers.filter((t) => scoreMap[t] > 0);
+      let selected = tickers.filter((t) => score[t] > 0);
       if (selected.length < 2) {
-        selected = [...tickers].sort((a, b) => scoreMap[b] - scoreMap[a]).slice(0, 2);
+        selected = [...tickers].sort((a, b) => score[b] - score[a]).slice(0, 2);
       }
 
       let invVolSum = 0;
       const provisional = { SPY: 0, QQQ: 0, GLD: 0, USO: 0, EWJ: 0 };
-      for (const t of selected) {
-        invVolSum += 1 / Math.max(featureMap[t].vol, 1e-6);
-      }
-      for (const t of selected) {
-        provisional[t] = (1 / Math.max(featureMap[t].vol, 1e-6)) / invVolSum;
-      }
+      for (const t of selected) invVolSum += 1 / Math.max(featureMap[t].vol, 1e-6);
+      for (const t of selected) provisional[t] = (1 / Math.max(featureMap[t].vol, 1e-6)) / invVolSum;
 
       const regime = classifyRegime({
         SPY: featureMap.SPY || { momLong: 0, vol: 0 },
@@ -243,26 +216,19 @@ function simulateStrategy(data, params) {
         provisional.QQQ *= 0.75 + params.equityTilt;
         provisional.GLD *= 1.35 + params.gldTilt;
       } else {
-        provisional.SPY *= 1.0 + params.equityTilt;
+        provisional.SPY *= 1 + params.equityTilt;
         provisional.QQQ *= 0.9 + params.equityTilt;
         provisional.GLD *= 1.2 + params.gldTilt;
       }
 
-      currentWeights = applyConstraints(provisional, params);
+      currentW = applyConstraints(provisional, params);
       holdUntil = i + params.rebalanceDays;
-
-      rebalanceLog.push({
-        date: data.dates[i],
-        regime,
-        ...currentWeights,
-      });
+      rebalanceLog.push({ date: data.dates[i], regime, ...currentW });
     }
 
-    let dayRet = 0;
-    for (const ticker of UNIVERSE) {
-      dayRet += (currentWeights[ticker] || 0) * dailyEtfReturns[ticker][i];
-    }
-    dailyStrategyReturns[i] = dayRet;
+    let ret = 0;
+    for (const ticker of UNIVERSE) ret += (currentW[ticker] || 0) * dailyRet[ticker][i];
+    strategyRet[i] = ret;
   }
 
   const strategyIndex = [];
@@ -270,21 +236,18 @@ function simulateStrategy(data, params) {
   let s = 100;
   let b = 100;
   for (let i = 0; i < n; i += 1) {
-    s *= 1 + dailyStrategyReturns[i];
-    b *= 1 + dailyEtfReturns.SPY[i];
+    s *= 1 + strategyRet[i];
+    b *= 1 + dailyRet.SPY[i];
     strategyIndex.push(s);
     spyIndex.push(b);
   }
 
-  const stratTotal = strategyIndex[strategyIndex.length - 1] / strategyIndex[0] - 1;
-  const spyTotal = spyIndex[spyIndex.length - 1] / spyIndex[0] - 1;
-  const stratVol = std(dailyStrategyReturns.slice(1)) * Math.sqrt(252);
-  const spyVol = std(dailyEtfReturns.SPY.slice(1)) * Math.sqrt(252);
-  const stratMdd = maxDrawdown(strategyIndex);
-  const spyMdd = maxDrawdown(spyIndex);
-  const stratSharpe = stratVol ? ((stratTotal / n) * 252) / stratVol : 0;
-  const spySharpe = spyVol ? ((spyTotal / n) * 252) / spyVol : 0;
-  const beta = covariance(dailyStrategyReturns.slice(1), dailyEtfReturns.SPY.slice(1)) / (spyVol / Math.sqrt(252)) ** 2;
+  const stratTotal = strategyIndex.at(-1) / strategyIndex[0] - 1;
+  const spyTotal = spyIndex.at(-1) / spyIndex[0] - 1;
+  const stratVol = std(strategyRet.slice(1)) * Math.sqrt(252);
+  const spyVol = std(dailyRet.SPY.slice(1)) * Math.sqrt(252);
+  const spyDailyVar = (spyVol / Math.sqrt(252)) ** 2;
+  const betaRaw = spyDailyVar ? covariance(strategyRet.slice(1), dailyRet.SPY.slice(1)) / spyDailyVar : 0;
 
   return {
     strategyIndex,
@@ -295,21 +258,17 @@ function simulateStrategy(data, params) {
       spy_total_return_pct: spyTotal * 100,
       alpha_vs_spy_pct: (stratTotal - spyTotal) * 100,
       annualized_volatility_pct: stratVol * 100,
-      max_drawdown_pct: stratMdd * 100,
-      sharpe_ratio: stratSharpe,
-      beta_vs_spy: Number.isFinite(beta) ? beta : 0,
-      spy_annualized_volatility_pct: spyVol * 100,
-      spy_max_drawdown_pct: spyMdd * 100,
-      spy_sharpe_ratio: spySharpe,
+      max_drawdown_pct: maxDrawdown(strategyIndex) * 100,
+      beta_vs_spy: Number.isFinite(betaRaw) ? betaRaw : 0,
     },
   };
 }
 
 function makeCard(label, value) {
-  const card = document.createElement("article");
-  card.className = "card";
-  card.innerHTML = `<div class="label">${label}</div><div class="value">${value}</div>`;
-  return card;
+  const el = document.createElement("article");
+  el.className = "card";
+  el.innerHTML = `<div class="label">${label}</div><div class="value">${value}</div>`;
+  return el;
 }
 
 function renderCards(summary) {
@@ -330,20 +289,8 @@ function renderStrategyChart(labels, strategySeries, spySeries) {
     data: {
       labels,
       datasets: [
-        {
-          label: "Strategy (Live)",
-          data: strategySeries,
-          borderColor: COLORS.strategy,
-          borderWidth: 2.3,
-          pointRadius: 0,
-        },
-        {
-          label: "SPY",
-          data: spySeries,
-          borderColor: COLORS.spy,
-          borderWidth: 1.8,
-          pointRadius: 0,
-        },
+        { label: "Strategy", data: strategySeries, borderColor: COLORS.strategy, borderWidth: 2.3, pointRadius: 0 },
+        { label: "SPY", data: spySeries, borderColor: COLORS.spy, borderWidth: 1.8, pointRadius: 0 },
       ],
     },
     options: {
@@ -365,7 +312,7 @@ function renderEtfChart(labels, etfIndex100) {
         label: ticker,
         data: etfIndex100[ticker],
         borderColor: COLORS[ticker],
-        borderWidth: ticker === "SPY" ? 2.0 : 1.5,
+        borderWidth: ticker === "SPY" ? 2 : 1.5,
         pointRadius: 0,
       })),
     },
@@ -396,42 +343,43 @@ function renderWeightChart(rebalanceLog) {
       plugins: { legend: { position: "top" } },
       scales: {
         x: { stacked: true },
-        y: {
-          stacked: true,
-          min: 0,
-          max: 100,
-          title: { display: true, text: "Weight (%)" },
-        },
+        y: { stacked: true, min: 0, max: 100, title: { display: true, text: "Weight (%)" } },
       },
     },
   });
 }
 
-function attachControlEvents(data) {
-  const rerender = () => {
-    const params = getParams();
-    updateControlValueLabels(params);
-    const result = simulateStrategy(data, params);
-    renderCards(result.summary);
-    renderStrategyChart(data.dates, result.strategyIndex, result.spyIndex);
-    renderWeightChart(result.rebalanceLog);
-  };
+function rerenderAll() {
+  const params = getParams();
+  updateControlValueLabels(params);
+  const result = simulateStrategy(appState.data, params);
+  renderCards(result.summary);
+  renderStrategyChart(appState.data.dates, result.strategyIndex, result.spyIndex);
+  renderEtfChart(appState.data.dates, appState.data.etf_index_100);
+  renderWeightChart(result.rebalanceLog);
+}
 
+function attachEvents() {
   Object.values(controls).forEach((el) => {
-    const eventName = el.type === "checkbox" ? "change" : "input";
-    el.addEventListener(eventName, rerender);
+    const ev = el.type === "checkbox" ? "change" : "input";
+    el.addEventListener(ev, rerenderAll);
   });
+}
 
-  rerender();
+function cloneData(raw) {
+  return {
+    ...raw,
+    dates: [...raw.dates],
+    etf_index_100: Object.fromEntries(UNIVERSE.map((t) => [t, [...raw.etf_index_100[t]]])),
+  };
 }
 
 async function main() {
   const res = await fetch("./backtest_data.json");
   if (!res.ok) throw new Error("Failed to load backtest_data.json");
-  const data = await res.json();
-
-  renderEtfChart(data.dates, data.etf_index_100);
-  attachControlEvents(data);
+  appState.data = cloneData(await res.json());
+  attachEvents();
+  rerenderAll();
 }
 
 main().catch((err) => {
