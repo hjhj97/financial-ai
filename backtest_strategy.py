@@ -14,6 +14,33 @@ INITIAL_CAPITAL = 10_000.0
 LOOKBACK_BY_PERIOD = {"1mo": "6mo", "1y": "2y"}
 MAX_SINGLE_WEIGHT = 0.55
 MAX_EQUITY_PAIR = 0.90
+CURRENT_GEOPOLITICAL_AS_OF = "2026-04-25"
+CURRENT_GEOPOLITICAL_CONTEXT = {
+    "as_of": CURRENT_GEOPOLITICAL_AS_OF,
+    "window_end": "2026-05-01",
+    "priority": "maximize_1w_return",
+    "summary": (
+        "2026-05-01까지의 1주 수익률 극대화를 목표로, 유가 충격 리스크, 다음 주 대형 기술주 실적, "
+        "FOMC와 BOJ 이벤트를 반영한 단기 이벤트 드리븐 오버레이"
+    ),
+    "drivers": [
+        {
+            "key": "oil_geopolitics",
+            "label": "미-이란/호르무즈발 유가 이벤트",
+            "portfolio_effect": "USO 비중 확대, GLD는 보조 헤지",
+        },
+        {
+            "key": "mag7_earnings",
+            "label": "다음 주 대형 기술주 실적 집중",
+            "portfolio_effect": "QQQ 전술 비중 확대",
+        },
+        {
+            "key": "central_bank_week",
+            "label": "FOMC와 BOJ 이벤트 주간",
+            "portfolio_effect": "SPY는 완충용, EWJ는 상한 축소",
+        },
+    ],
+}
 
 
 @dataclass
@@ -139,6 +166,152 @@ def apply_constraints(weights: pd.Series) -> pd.Series:
         constrained = constrained / total_after
 
     return constrained
+
+
+def get_current_geopolitical_context() -> dict[str, object]:
+    return {
+        "as_of": CURRENT_GEOPOLITICAL_CONTEXT["as_of"],
+        "window_end": CURRENT_GEOPOLITICAL_CONTEXT["window_end"],
+        "priority": CURRENT_GEOPOLITICAL_CONTEXT["priority"],
+        "summary": CURRENT_GEOPOLITICAL_CONTEXT["summary"],
+        "drivers": [dict(item) for item in CURRENT_GEOPOLITICAL_CONTEXT["drivers"]],
+    }
+
+
+def build_weight_candidates(seed: int = 42, num_random: int = 40000) -> list[np.ndarray]:
+    rng = np.random.default_rng(seed)
+    candidates: list[np.ndarray] = []
+
+    for i in range(len(UNIVERSE)):
+        weights = np.zeros(len(UNIVERSE))
+        weights[i] = 1.0
+        candidates.append(weights)
+
+    for i in range(len(UNIVERSE)):
+        for j in range(i + 1, len(UNIVERSE)):
+            for ratio in np.linspace(0.1, 0.9, 9):
+                weights = np.zeros(len(UNIVERSE))
+                weights[i] = ratio
+                weights[j] = 1.0 - ratio
+                candidates.append(weights)
+
+    candidates.extend(rng.dirichlet(alpha=np.ones(len(UNIVERSE)), size=num_random))
+    return candidates
+
+
+def evaluate_static_portfolio(daily_returns: pd.DataFrame, weights: np.ndarray) -> dict[str, float]:
+    portfolio_daily = daily_returns.to_numpy() @ weights
+    cumulative = np.cumprod(1.0 + portfolio_daily)
+    total_return = float(cumulative[-1] - 1.0)
+    annualized_volatility = float(np.std(portfolio_daily, ddof=0) * np.sqrt(252.0))
+    running_max = np.maximum.accumulate(cumulative)
+    max_dd = float((cumulative / running_max - 1.0).min())
+    return {
+        "total_return": total_return,
+        "total_return_pct": total_return * 100.0,
+        "annualized_volatility": annualized_volatility,
+        "annualized_volatility_pct": annualized_volatility * 100.0,
+        "max_drawdown": max_dd,
+        "max_drawdown_pct": max_dd * 100.0,
+    }
+
+
+def current_profile_spec(risk_profile: str) -> dict[str, object]:
+    if risk_profile == "conservative":
+        return {
+            "name": "1주 밸런스형",
+            "objective": "5월 1일까지의 이벤트 드리븐 수익을 노리되, GLD·SPY로 급변동을 완충",
+            "premia": np.array([0.04, 0.06, 0.02, 0.09, -0.05]),
+            "max_single_weight": 0.45,
+            "max_equity_pair": 0.70,
+            "min_weights": {"QQQ": 0.10, "USO": 0.15, "GLD": 0.05},
+            "max_weights": {"EWJ": 0.08, "GLD": 0.18},
+        }
+    if risk_profile == "aggressive":
+        return {
+            "name": "1주 수익극대형",
+            "objective": "5월 1일까지의 단기 알파 극대화. 유가 이벤트와 빅테크 실적을 강하게 반영",
+            "premia": np.array([0.03, 0.09, 0.01, 0.13, -0.06]),
+            "max_single_weight": 0.55,
+            "max_equity_pair": 0.65,
+            "min_weights": {"QQQ": 0.20, "USO": 0.25},
+            "max_weights": {"GLD": 0.10, "EWJ": 0.05, "SPY": 0.25},
+        }
+    raise ValueError(f"Unsupported risk profile: {risk_profile}")
+
+
+def candidate_satisfies_constraints(weights: np.ndarray, spec: dict[str, object]) -> bool:
+    max_single_weight = float(spec["max_single_weight"])
+    max_equity_pair = float(spec["max_equity_pair"])
+    min_weights = spec.get("min_weights", {})
+    max_weights = spec.get("max_weights", {})
+
+    if float(weights.max()) > max_single_weight + 1e-12:
+        return False
+    if float(weights[0] + weights[1]) > max_equity_pair + 1e-12:
+        return False
+
+    for ticker, min_weight in min_weights.items():
+        if float(weights[UNIVERSE.index(ticker)]) + 1e-12 < float(min_weight):
+            return False
+
+    for ticker, max_weight in max_weights.items():
+        if float(weights[UNIVERSE.index(ticker)]) > float(max_weight) + 1e-12:
+            return False
+
+    return True
+
+
+def optimize_current_portfolio(prices: pd.DataFrame, evaluation_period: str, risk_profile: str) -> dict[str, object]:
+    spec = current_profile_spec(risk_profile)
+    evaluation_start = prices.index.max() - period_to_offset(evaluation_period)
+    eval_prices = prices.loc[prices.index >= evaluation_start, UNIVERSE].dropna(how="any")
+    daily_returns = eval_prices.pct_change().dropna(how="any")
+
+    equal_weights = np.repeat(1.0 / len(UNIVERSE), len(UNIVERSE))
+    if daily_returns.empty:
+        metrics = evaluate_static_portfolio(pd.DataFrame(np.zeros((2, len(UNIVERSE))), columns=UNIVERSE), equal_weights)
+        return {
+            "name": str(spec["name"]),
+            "objective": str(spec["objective"]),
+            "weights": {ticker: float(equal_weights[i]) for i, ticker in enumerate(UNIVERSE)},
+            "metrics": metrics,
+            "context_as_of": CURRENT_GEOPOLITICAL_AS_OF,
+        }
+
+    adjusted_expected_returns = daily_returns.mean().to_numpy() * 252.0 + np.asarray(spec["premia"], dtype=float)
+
+    best_weights = None
+    best_metrics = None
+    best_score = None
+
+    for weights in build_weight_candidates():
+        if not candidate_satisfies_constraints(weights, spec):
+            continue
+
+        metrics = evaluate_static_portfolio(daily_returns, weights)
+        scenario_return = float(weights @ adjusted_expected_returns)
+        if risk_profile == "conservative":
+            score = (metrics["annualized_volatility"], -scenario_return)
+        else:
+            score = (-scenario_return, metrics["annualized_volatility"])
+
+        if best_score is None or score < best_score:
+            best_score = score
+            best_weights = weights
+            best_metrics = metrics
+
+    if best_weights is None or best_metrics is None:
+        best_weights = equal_weights
+        best_metrics = evaluate_static_portfolio(daily_returns, best_weights)
+
+    return {
+        "name": str(spec["name"]),
+        "objective": str(spec["objective"]),
+        "weights": {ticker: float(best_weights[i]) for i, ticker in enumerate(UNIVERSE)},
+        "metrics": best_metrics,
+        "context_as_of": CURRENT_GEOPOLITICAL_AS_OF,
+    }
 
 
 def compute_target_weights(prices: pd.DataFrame, as_of: pd.Timestamp) -> tuple[pd.Series, str, pd.DataFrame]:

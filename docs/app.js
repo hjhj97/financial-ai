@@ -18,6 +18,13 @@ const controls = {
   EWJ: document.getElementById("wEWJ"),
 };
 
+const presetButtons = {
+  conservative: document.getElementById("presetConservative"),
+  aggressive: document.getElementById("presetAggressive"),
+};
+
+const presetMeta = document.getElementById("presetMeta");
+
 const controlValues = {
   SPY: document.getElementById("wSPYValue"),
   QQQ: document.getElementById("wQQQValue"),
@@ -35,6 +42,7 @@ const charts = {
 
 const appState = {
   data: null,
+  activePreset: null,
 };
 
 function pct(v) {
@@ -81,6 +89,36 @@ function normalizeWeights(rawWeights) {
   return Object.fromEntries(UNIVERSE.map((t) => [t, (rawWeights[t] || 0) / total]));
 }
 
+function weightsToIntegerPercents(weights) {
+  const normalized = normalizeWeights(weights);
+  const rows = UNIVERSE.map((ticker) => {
+    const scaled = normalized[ticker] * 100;
+    const floorValue = Math.floor(scaled);
+    return {
+      ticker,
+      floorValue,
+      frac: scaled - floorValue,
+    };
+  });
+
+  let remain = 100 - rows.reduce((acc, row) => acc + row.floorValue, 0);
+  rows.sort((a, b) => b.frac - a.frac);
+
+  for (let i = 0; i < rows.length && remain > 0; i += 1) {
+    rows[i].floorValue += 1;
+    remain -= 1;
+  }
+
+  return Object.fromEntries(rows.map((row) => [row.ticker, row.floorValue]));
+}
+
+function setControlWeights(weights) {
+  const integerWeights = weightsToIntegerPercents(weights);
+  for (const ticker of UNIVERSE) {
+    controls[ticker].value = String(integerWeights[ticker]);
+  }
+}
+
 function updateControlLabels(rawWeights) {
   for (const t of UNIVERSE) {
     controlValues[t].textContent = `${rawWeights[t]}%`;
@@ -88,6 +126,45 @@ function updateControlLabels(rawWeights) {
   const total = UNIVERSE.reduce((acc, t) => acc + rawWeights[t], 0);
   const totalEl = document.getElementById("weightTotalText");
   totalEl.textContent = `입력 비중 합계: ${total}% (차트 계산 시 자동으로 100% 정규화)`;
+}
+
+function formatCurrentContext() {
+  const context = appState.data?.current_context;
+  if (!context) {
+    return "버튼을 누르면 계산된 최적 ETF 비율이 슬라이더에 반영됩니다.";
+  }
+  const endDate = context.window_end ? ` ~ ${context.window_end}` : "";
+  return `${context.as_of}${endDate} 단기 목표: ${context.summary}`;
+}
+
+function formatProfileMeta(profile) {
+  if (!profile) {
+    return formatCurrentContext();
+  }
+  const m = profile.metrics || {};
+  const r = Number(m.total_return_pct || 0).toFixed(2);
+  const v = Number(m.annualized_volatility_pct || 0).toFixed(2);
+  const d = Number(m.max_drawdown_pct || 0).toFixed(2);
+  return `${profile.name} | 목표: ${profile.objective} | 누적수익률 ${r}%, 연변동성 ${v}%, MDD ${d}%`;
+}
+
+function updatePresetUI(activeKey) {
+  for (const [key, btn] of Object.entries(presetButtons)) {
+    if (!btn) continue;
+    btn.classList.toggle("active", key === activeKey);
+  }
+  const profiles = appState.data?.risk_profiles || {};
+  const activeProfile = activeKey ? profiles[activeKey] : null;
+  if (presetMeta) presetMeta.textContent = formatProfileMeta(activeProfile);
+}
+
+function applyPreset(key) {
+  const profile = appState.data?.risk_profiles?.[key];
+  if (!profile || !profile.weights) return;
+  setControlWeights(profile.weights);
+  appState.activePreset = key;
+  updatePresetUI(key);
+  rerenderAll();
 }
 
 function buildDailyReturns(etfIndex100) {
@@ -268,7 +345,16 @@ function rerenderAll() {
 }
 
 function attachEvents() {
-  Object.values(controls).forEach((el) => el.addEventListener("input", rerenderAll));
+  Object.values(controls).forEach((el) =>
+    el.addEventListener("input", () => {
+      appState.activePreset = null;
+      updatePresetUI(null);
+      rerenderAll();
+    }),
+  );
+
+  presetButtons.conservative?.addEventListener("click", () => applyPreset("conservative"));
+  presetButtons.aggressive?.addEventListener("click", () => applyPreset("aggressive"));
 }
 
 function cloneData(raw) {
@@ -276,6 +362,8 @@ function cloneData(raw) {
     ...raw,
     dates: [...raw.dates],
     etf_index_100: Object.fromEntries(UNIVERSE.map((t) => [t, [...raw.etf_index_100[t]]])),
+    risk_profiles: raw.risk_profiles || null,
+    current_context: raw.current_context || null,
   };
 }
 
@@ -284,7 +372,12 @@ async function main() {
   if (!res.ok) throw new Error("Failed to load backtest_data.json");
   appState.data = cloneData(await res.json());
   attachEvents();
-  rerenderAll();
+  if (!appState.data.risk_profiles) {
+    for (const btn of Object.values(presetButtons)) {
+      if (btn) btn.disabled = true;
+    }
+  }
+  applyPreset("aggressive");
 }
 
 main().catch((err) => {

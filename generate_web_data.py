@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from backtest_strategy import UNIVERSE, download_prices, period_to_offset, run_backtest
+from backtest_strategy import (
+    UNIVERSE,
+    download_prices,
+    get_current_geopolitical_context,
+    optimize_current_portfolio,
+    period_to_offset,
+    run_backtest,
+)
 
 
 def parse_weights(weight_text: str) -> dict[str, float]:
@@ -34,6 +41,11 @@ def build_payload(period: str) -> dict:
     evaluation_start = prices.index.max() - period_to_offset(period)
     eval_prices = prices.loc[prices.index >= evaluation_start].copy()
     eval_prices = eval_prices.dropna(how="any")
+    risk_profiles = {
+        "conservative": optimize_current_portfolio(prices, period, "conservative"),
+        "aggressive": optimize_current_portfolio(prices, period, "aggressive"),
+    }
+    current_context = get_current_geopolitical_context()
 
     normalized = eval_prices.divide(eval_prices.iloc[0]).multiply(100.0)
     strategy_curve = (1.0 + result.daily_portfolio).cumprod().multiply(100.0)
@@ -77,6 +89,8 @@ def build_payload(period: str) -> dict:
             ticker: [float(normalized.loc[d, ticker]) for d in common_index] for ticker in UNIVERSE
         },
         "weekly_weights": weekly_weights,
+        "risk_profiles": risk_profiles,
+        "current_context": current_context,
     }
     return payload
 
